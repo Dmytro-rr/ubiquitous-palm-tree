@@ -1,0 +1,188 @@
+#If I had more time, I'd probably split this playbook into roles, for it to look more tidy & neat :)
+- hosts: all
+  become: true
+  vars_files:
+    - vars/default.yml
+
+  tasks:
+    - name: Install Prerequisites
+      apt: name={{ item }} update_cache=yes state=latest force_apt_get=yes
+      loop: [ 'aptitude' ]
+
+    - name: Download the signing key
+      shell: wget -O /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg
+
+    - name: Add the packages in sources lists
+      shell: sh -c 'echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list'
+
+    - name: Update packages
+      become: true
+      apt:
+        update_cache=yes
+
+    - name: Install php
+      shell: sudo apt install -y php7.4 php7.4-common php7.4-cli php7.4-fpm
+
+    - name: Install extensions
+      shell: sudo apt install -y php7.4-curl php7.4-json php7.4-gd php7.4-mbstring php7.4-intl php7.4-bcmath php7.4-bz2 php7.4-readline php7.4-zip
+
+    - name: Install remove apache2
+      shell: sudo apt remove -y apache2 && sudo rm -f /var/www/html/index.html
+
+
+    - name: Install nginx
+      apt:
+          name: nginx
+
+    - name: trust mysql repository
+      apt_key:
+        keyserver: keyserver.ubuntu.com
+        id: 5072E1F5
+
+    - name: add mysql repository
+      apt_repository:
+          repo: deb http://repo.mysql.com/apt/debian/ {{ ansible_distribution_release }} mysql-5.6
+          state: present
+          filename: repo_mysql_5.6
+
+    - name: add mysql python connector
+      apt_repository:
+          repo: deb http://repo.mysql.com/apt/debian/ {{ ansible_distribution_release }} connector-python-2.1
+          state: present
+          filename: repo_mysql_python_connector
+
+    - name: install python-mysqldb
+      apt:
+          name: python-mysqldb
+          update_cache: yes
+
+# Install MySQL
+    - name: install mysql
+      apt:
+          name: default-mysql-server
+          update_cache: yes
+
+
+#MySQL Configuration
+    - name: Sets the root password
+      mysql_user:
+        name: root
+        password: "{{ mysql_root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Removes all anonymous user accounts
+      mysql_user:
+        name: ''
+        host_all: yes
+        state: absent
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+    - name: Removes the MySQL test database
+      mysql_db:
+        name: test
+        state: absent
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+## UFW Configuration
+##    - name: "UFW - Allow HTTP on port {{ http_port }}"
+##      ufw:
+##        rule: allow
+##        port: "{{ http_port }}"
+##        proto: tcp
+##    - name: "UFW - Allow HTTP on port {{ http_port }}"
+##      ufw:
+##        rule: allow
+##       port: "{{ https_port }}"
+##        proto: tcp
+
+# tasks file for letsencrypt
+    - name: Install Python simplejson
+      apt:
+        pkg: python-simplejson
+        state: present
+        update_cache: true
+
+    - name: install letsencrypt
+      apt:
+        name: letsencrypt
+        state: latest
+
+    - name: create letsencrypt directory
+      file:
+        name: /var/www/letsencrypt
+        state: directory
+
+    - name: Remove default nginx config
+      file:
+        name: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Install system nginx config
+      template:
+        src: files/nginx.conf.j2
+        dest: /etc/nginx/nginx.conf
+
+    - name: Install nginx site for letsencrypt requests
+      template:
+        src: files/nginx-http.j2
+        dest: /etc/nginx/sites-enabled/http
+
+    - name: Reload nginx to activate letsencrypt site
+      service:
+        name: nginx
+        state: restarted
+
+    - name: Create letsencrypt certificate
+      shell: sudo letsencrypt certonly -n --webroot -w /var/www/letsencrypt -m d.rudkovskyi@gmail.com --agree-tos -d {{ http_host }}
+      args:
+        creates: /etc/letsencrypt/live/{{ http_host }}
+
+    - name: Generate dhparams
+      shell: openssl dhparam -out /etc/nginx/dhparams.pem 2048
+      args:
+        creates: /etc/nginx/dhparams.pem
+
+    - name: Add empty data directory for {{ http_host }} static files at /var/www/{{ http_host }} && service nginx reload
+      become: true
+      file:
+        path: "/var/www/{{ http_host }}"
+        state: directory
+        mode: u=rwx,g=r,o=r
+        owner: www-data
+        group: www-data
+
+    - name: Install nginx site for {{ http_host }}
+      template:
+        src: files/nginx-le.j2
+        dest: /etc/nginx/sites-enabled/{{ http_host }}
+
+    - name: Reload nginx to activate specified site
+      service:
+        name: nginx
+        state: restarted
+
+    - name: Add letsencrypt cronjob for cert renewal
+      cron:
+        name: letsencrypt_renewal
+        special_time: weekly
+        job: letsencrypt --renew certonly -n --webroot -w /var/www/letsencrypt -m d.rudkovskyi@gmail.com --agree-tos -d {{ http_host }} && service nginx reload
+
+
+# Sets Up PHP Info Page
+    - name: Sets Up PHP Info Page
+      template:
+        src: "files/info.php.j2"
+        dest: "/var/www/{{ http_host }}/info.php"
+
+  handlers:
+    - name: Reload Nginx
+      service:
+        name: nginx
+        state: reloaded
+
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted

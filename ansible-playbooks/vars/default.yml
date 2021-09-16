@@ -1,0 +1,6 @@
+---
+mysql_root_password: "very!Str0ngPass_wd20210916!#=m"
+http_host: "tws19.pp.ua"
+http_conf: "tws19.pp.ua.conf"
+http_port: "80"
+https_port: "443"
